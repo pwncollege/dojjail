@@ -118,9 +118,9 @@ docker run \
 ### Seccomp Filter
 
 In particular, the system calls we need access to, which docker does not normally allow, are:
-- unshare (create namespaces, think `docker run`)
-- setns (join an already created namespace, think `docker exec`)
-- sethostname (set the hostname within a namespace, think `docker run --hostname=...`)
+- `unshare` (create namespaces, think `docker run`)
+- `setns` (join an already created namespace, think `docker exec`)
+- `sethostname` (set the hostname within a namespace, think `docker run --hostname=...`)
 
 You can create a custom seccomp filter which just unblocks these system calls, as the above usage example does.
 
