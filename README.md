@@ -8,14 +8,15 @@ Think something like docker, but with a super simple implementation, and python 
 You can spin up a host this simply:
 
 ```python
-In [1]: import os
-   ...: from dojjail import Host
-   ...:
-   ...: host = Host("host-1")
-   ...: host.run()
-   ...:
-   ...: host.exec(lambda: os.system("hostname; whoami; ip a"))
+import os
+from dojjail import Host
 
+host = Host("host-1")
+host.run()
+
+host.exec(lambda: os.system("hostname; whoami; ip a"))
+```
+```
 host-1
 root
 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
@@ -29,19 +30,20 @@ root
 You can also spin up a network of hosts:
 
 ```python
-In [1]: import os
-   ...: from dojjail import Host, Network
-   ...:
-   ...: host_1 = Host("host-1")
-   ...: host_2 = Host("host-2")
-   ...:
-   ...: network = Network("router")
-   ...: network.connect(host_1, host_2)
-   ...:
-   ...: network.run()
-   ...:
-   ...: host_1.exec(lambda: os.system("ping -c 3 10.0.0.2"))
+import os
+from dojjail import Host, Network
 
+host_1 = Host("host-1")
+host_2 = Host("host-2")
+
+network = Network("router")
+network.connect(host_1, host_2)
+
+network.run()
+
+host_1.exec(lambda: os.system("ping -c 3 10.0.0.2"))
+```
+```
 PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.073 ms
 64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.047 ms
@@ -53,31 +55,32 @@ The important thing to realize with these `Host.exec`s is that you are running a
 This means, for example, you can write python to orchestrate the interaction of various hosts, all within python:
 
 ```python
-   ...: import requests
-   ...: from flask import Flask
-   ...: from dojjail import Host, Network
-   ...:
-   ...: app = Flask(__name__)
-   ...:
-   ...: @app.route("/")
-   ...: def hello_world():
-   ...:     return "Hello, World!"
-   ...:
-   ...: class WebServerHost(Host):
-   ...:     def entrypoint(self):
-   ...:         app.run("0.0.0.0", 80)
-   ...:
-   ...: server_host = WebServerHost("web-server")
-   ...: client_host = Host("web-client")
-   ...:
-   ...: network = Network("router")
-   ...: network.connect(server_host, client_host)
-   ...:
-   ...: network.run()
-   ...:
-   ...: response = client_host.exec(lambda: requests.get("http://10.0.0.1/"))
-   ...: print(response.text)
+ import requests
+ from flask import Flask
+ from dojjail import Host, Network
 
+ app = Flask(__name__)
+
+ @app.route("/")
+ def hello_world():
+     return "Hello, World!"
+
+ class WebServerHost(Host):
+     def entrypoint(self):
+         app.run("0.0.0.0", 80)
+
+ server_host = WebServerHost("web-server")
+ client_host = Host("web-client")
+
+ network = Network("router")
+ network.connect(server_host, client_host)
+
+ network.run()
+
+ response = client_host.exec(lambda: requests.get("http://10.0.0.1/"))
+ print(response.text)
+```
+```
  * Serving Flask app '__main__'
  * Debug mode: off
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
