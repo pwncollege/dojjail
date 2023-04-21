@@ -1,9 +1,11 @@
 # dojjail
 
 *dojjail* is a simple python framework for running complex namespace configurations.
-Think something like docker, but with a super simple implementation, and python library interface instead of command line interface.
+Think something like docker, but which looks more like `subprocess.run` than `docker run`.
 
 # Usage
+
+## `dojjail.Host`
 
 You can spin up a host this simply:
 
@@ -27,6 +29,8 @@ root
        valid_lft forever preferred_lft forever
 ```
 
+## `dojjail.Network`
+
 You can also spin up a network of hosts:
 
 ```python
@@ -41,7 +45,8 @@ network.connect(host_1, host_2)
 
 network.run()
 
-host_1.exec(lambda: os.system("ping -c 3 10.0.0.2"))
+result = host_1.exec_shell("ping -c 3 10.0.0.2")
+print(result.stdout.decode())
 ```
 ```
 PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
@@ -50,9 +55,15 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.056 ms
 ```
 
-The important thing to realize with these `Host.exec`s is that you are running arbitrary *python* code.
+Notice that in this case we used `Host.exec_shell` instead of `Host.exec`.
+If all you're interested in running is a shell command, `Host.exec_shell` is a simple wrapper around `Host.exec` which uses `subprocess.run` to return a `subprocess.CompletedProcess`.
 
-This means, for example, you can write python to orchestrate the interaction of various hosts, all within python:
+## `dojjail.Host.entrypoint`
+
+The important thing to realize with these `Host.exec`s is that you are running arbitrary *python* code.
+This means, we are not restricted to just running shell commands like above.
+
+For example, you can write python to orchestrate the interaction of various hosts, all without leaving python:
 
 ```python
  import requests
@@ -92,7 +103,11 @@ Press CTRL+C to quit
 Hello, World!
 ```
 
-## Docker
+In this case, we need to override the default `Host.entrypoint` (which is just `while True: time.sleep(1)`).
+This is because `Host.exec` is syncronous (as in you can't just run two `Host.exec`s at once), and so we would need to multiprocess or multithread in order to achieve two simultaneous `Host.exec`s.
+Or, we could just override `Host.entrypoint`, as is done here, since that is already in a separate process (specifically, it is the pid 1 of that host's PID namespace).
+
+# Dockerfile
 
 First, build the docker image:
 ```sh
@@ -115,7 +130,7 @@ docker run \
     dojjail
 ```
 
-### Seccomp Filter
+## Seccomp Filter
 
 In particular, the system calls we need access to, which docker does not normally allow, are:
 - `unshare` (create namespaces, think `docker run`)
