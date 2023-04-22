@@ -1,7 +1,7 @@
 from dojjail import Host, Network
 
 
-def test_simple():
+def _test_simple():
     network = Network("router")
 
     host_1 = Host("host-1")

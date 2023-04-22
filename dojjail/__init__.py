@@ -11,6 +11,8 @@ import time
 import shutil
 import ctypes
 
+from .libseccomp import seccomp_allow, seccomp_block
+
 
 CLONE_NEWNS       = 0x00020000 # New mount namespace group
 CLONE_NEWCGROUP   = 0x02000000 # New cgroup namespace
@@ -19,8 +21,6 @@ CLONE_NEWIPC      = 0x08000000 # New ipc namespace
 CLONE_NEWUSER     = 0x10000000 # New user namespace
 CLONE_NEWPID      = 0x20000000 # New pid namespace
 CLONE_NEWNET      = 0x40000000 # New network namespace
-
-SCMP_ACT_ALLOW	  = 0x7fff0000
 
 PR_SET_PDEATHSIG  = 1
 
@@ -33,7 +33,6 @@ PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
 
 libc = ctypes.CDLL("libc.so.6")
-libseccomp = ctypes.CDLL("libseccomp.so.2")
 
 
 def new_user_ns(ns_flags=0, uid_map=None):
@@ -87,15 +86,10 @@ def iptables_load(rules):
         raise Exception(e.stderr)
 
 
-def seccomp_block(syscalls):
-    libseccomp.seccomp_init(0)
-
-
 class Host:
     _next_id = 0
 
-    def __init__(self, name, *, ns_flags=None):
-        self.name = name
+    def __init__(self, name, *, ns_flags=None, seccomp_allow=None, seccomp_block=None):
         if ns_flags is None:
             ns_flags = (
                 CLONE_NEWNS |
@@ -105,7 +99,11 @@ class Host:
                 CLONE_NEWPID |
                 CLONE_NEWNET
             )
+
+        self.name = name
         self.ns_flags = ns_flags
+        self.seccomp_allow = seccomp_allow
+        self.seccomp_block = seccomp_block
 
         self.id = Host._next_id
         Host._next_id += 1
@@ -125,6 +123,7 @@ class Host:
             return
         self.start()
         started_semaphore.release()
+        self.seccomp()
         self.entrypoint()
 
     def start(self):
@@ -167,6 +166,12 @@ class Host:
         os.setgid(uid)
         os.setgroups([uid])
 
+    def seccomp(self):
+        if self.seccomp_allow is not None:
+            seccomp_allow(self.seccomp_allow)
+        if self.seccomp_block is not None:
+            seccomp_block(self.seccomp_block)
+
     def exec(self, fn, *, uid=PRIVILEGED_UID):
         parent_pipe, child_pipe = multiprocessing.Pipe()
         pid = os.fork()
@@ -174,6 +179,7 @@ class Host:
             os.wait()
             return pickle.loads(parent_pipe.recv_bytes())
         self.enter(uid=uid)
+        self.seccomp()
         result = fn()
         child_pipe.send_bytes(pickle.dumps(result))
         os._exit(0)
@@ -282,6 +288,11 @@ class Network(Host):
 class SimpleFSHost(Host):
     def __init__(self, *args, **kwargs):
         self.src_path = pathlib.Path(kwargs.pop("src_path"))
+
+        syscall_blocks = kwargs.pop("syscall_blocks", [])
+        syscall_blocks.append("chroot")
+        kwargs["syscall_blocks"] = syscall_blocks
+
         super().__init__(*args, **kwargs)
 
     @property
@@ -297,7 +308,7 @@ class SimpleFSHost(Host):
             path = self.fs_path / path_name
             path.mkdir(exist_ok=True)
 
-        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chroot(self.fs_path)
         os.chdir("/")
 
         os.mknod("/dev/null", 0o666)
@@ -321,5 +332,5 @@ class SimpleFSHost(Host):
 
     def enter(self, *args, **kwargs):
         super().enter(*args, **kwargs)
-        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chroot(self.fs_path)
         os.chdir("/")
