@@ -274,6 +274,11 @@ class SimpleFSHost(Host):
                 f"nobody:x:65534:",
             ]))
 
+        try:
+            subprocess.run(["/busybox", "--install"], capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise Exception(e.stderr)
+
     def enter(self, *args, **kwargs):
         super().enter(*args, **kwargs)
         os.chroot(self.fs_path)
