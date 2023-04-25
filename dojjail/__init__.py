@@ -89,7 +89,9 @@ def iptables_load(rules):
 class Host:
     _next_id = 0
 
-    def __init__(self, name, *, ns_flags=None, seccomp_allow=None, seccomp_block=None):
+    def __init__(self, name=None, *, ns_flags=None, seccomp_allow=None, seccomp_block=None):
+        if name is None:
+            name = f"Host-{Host._next_id}"
         if ns_flags is None:
             ns_flags = (
                 CLONE_NEWNS |
@@ -177,10 +179,16 @@ class Host:
         pid = os.fork()
         if pid:
             os.wait()
-            return pickle.loads(parent_pipe.recv_bytes())
+            result = pickle.loads(parent_pipe.recv_bytes())
+            if isinstance(result, Exception):
+                raise result
+            return result
         self.enter(uid=uid)
         self.seccomp()
-        result = fn()
+        try:
+            result = fn()
+        except Exception as e:
+            result = e
         child_pipe.send_bytes(pickle.dumps(result))
         os._exit(0)
 
