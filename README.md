@@ -147,3 +147,35 @@ The security model of user namespaces within Linux suggests that this *should be
 However, various CVEs surrounding namespaces suggest that it's a dangerous code base, ripe with future unknown vulnerabilities.
 Probably, we will one day live in a future where user namespaces are allowed by default within docker.
 But that world does not yet exist, good luck.
+
+
+# Implementation
+
+## Namespaced Process Tree
+
+```
+init namespace:
+                 run() --- new_ns() --------- ... --------------------------- exec(fn) ------------------ ...
+                              |                                                 |
+                              |                                               enter()
+                              |                                                 |
+                           unshare()                                          set_ns()
+============================= |=================================================|============================
+Host namespace:               |                                                 |
+                              --- start() --- wait() --- exit()                 |
+                                          |                                     |
+pid 1:                                    --- seccomp() --- entrypoint()        |
+                                                                                |
+                                                                                |
+                                                                                --- seccomp() -- fn()
+```
+
+- `Host.run()` is called to begin the new `Host` life cycle
+- This in turn calls `new_ns()`, which `fork()`s
+- The parent process waits for the `Host` to finish initializing
+- The child process calls `unshare()` to create a new namespace, and then initializes the new `Host` namespace by calling `Host.start()`, which `fork()`s
+- The parent process (in the new `Host` namespace) `wait()`s for the child process to die, and then `exit()`s
+- The child process (in the new `Host` namespace) is now `pid 1`, since it is the child of a `unshare(PID) ... fork()`, and calls `Host.seccomp()` and `Host.entrypoint()`
+- Once the `Host` has finished initializing, the initial process is able to resume and may call `Host.exec(fn)`, which `fork()`s
+- The parent process waits for `fn()` to finish executing
+- The child process calls `Host.enter()`, which calls `set_ns()` to enter the `Host`s namespace, and then calls `Host.seccomp()` and `fn()`
