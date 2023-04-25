@@ -1,9 +1,6 @@
-import os
+import contextlib
 import ctypes
 import errno
-import contextlib
-import pathlib
-import re
 
 
 SCMP_ACT_ALLOW = 0x7fff0000

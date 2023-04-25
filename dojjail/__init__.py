@@ -8,21 +8,13 @@ import pathlib
 import tempfile
 import time
 import shutil
-import ctypes
 import weakref
 
-from .libseccomp import seccomp_allow, seccomp_block
+from .ns import NS, new_ns, set_ns
+from .net import ip_run, iptables_load
+from .seccomp import seccomp_allow, seccomp_block
+from .utils import fork_clean
 
-
-CLONE_NEWNS       = 0x00020000 # New mount namespace group
-CLONE_NEWCGROUP   = 0x02000000 # New cgroup namespace
-CLONE_NEWUTS      = 0x04000000 # New utsname namespace
-CLONE_NEWIPC      = 0x08000000 # New ipc namespace
-CLONE_NEWUSER     = 0x10000000 # New user namespace
-CLONE_NEWPID      = 0x20000000 # New pid namespace
-CLONE_NEWNET      = 0x40000000 # New network namespace
-
-PR_SET_PDEATHSIG  = 1
 
 HOST_UID_MAP_BASE = 100000
 HOST_UID_MAP_PRIVILEGED_OFFSET = 0
@@ -32,75 +24,15 @@ HOST_UID_MAP_STEP = 1000
 PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
 
-libc = ctypes.CDLL("libc.so.6")
-
-
-def new_user_ns(ns_flags=0, uid_map=None):
-    if uid_map is None:
-        uid_map = f"{PRIVILEGED_UID} {os.getuid()} 1\n"
-    unshare_semaphore = multiprocessing.Semaphore(0)
-    id_map_semaphore = multiprocessing.Semaphore(0)
-    pid = os.fork()
-    if pid:
-        unshare_semaphore.acquire()
-        for path in [f"/proc/{pid}/uid_map", f"/proc/{pid}/gid_map"]:
-            with open(path, "w") as f:
-                f.write(uid_map)
-        id_map_semaphore.release()
-    else:
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-        libc.unshare(CLONE_NEWUSER | ns_flags)
-        unshare_semaphore.release()
-        id_map_semaphore.acquire()
-    return pid
-
-
-def sbin_which(program):
-    for dir in ["/sbin", "/usr/sbin"]:
-        path = pathlib.Path(dir, program)
-        if path.exists():
-            return path
-    else:
-        raise Exception(f"`{program}` not found")
-
-
-def ip_run(command, *, check=True):
-    try:
-        return subprocess.run([sbin_which("ip"), *command.split()],
-                              stdin=subprocess.DEVNULL,
-                              encoding="ascii",
-                              capture_output=True,
-                              check=check)
-    except subprocess.CalledProcessError as e:
-        raise Exception(e.stderr)
-
-
-def iptables_load(rules):
-    try:
-        return subprocess.run([sbin_which("iptables-restore")],
-                              input=rules,
-                              encoding="ascii",
-                              capture_output=True,
-                              check=True)
-    except subprocess.CalledProcessError as e:
-        raise Exception(e.stderr)
-
 
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=None, seccomp_allow=None, seccomp_block=None):
+    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None):
         if name is None:
             name = f"Host-{Host._next_id}"
-        if ns_flags is None:
-            ns_flags = (
-                CLONE_NEWNS |
-                CLONE_NEWCGROUP |
-                CLONE_NEWUTS |
-                CLONE_NEWIPC |
-                CLONE_NEWPID |
-                CLONE_NEWNET
-            )
+
+        ns_flags |= NS.USER
 
         self.name = name
         self.ns_flags = ns_flags
@@ -122,34 +54,34 @@ class Host:
         self._finalizer = weakref.finalize(self, cleanup)
 
     def run(self):
-        started_semaphore = multiprocessing.Semaphore(0)
-        pid = new_user_ns(self.ns_flags, self.host_id_map)
+        started_event = multiprocessing.Event()
+        pid = new_ns(self.ns_flags, self.host_id_map)
         if pid:
             self._pid.value = pid
-            started_semaphore.acquire()
+            started_event.wait()
             return
         self.start()
-        started_semaphore.release()
+        started_event.set()
         self.seccomp()
         result = self.entrypoint()
         self._child_pipe.send(result)
         os._exit(0)
 
     def start(self):
-        if self.ns_flags & CLONE_NEWPID:
-            if os.fork():
+        if self.ns_flags & NS.UTS:
+            socket.sethostname(self.name)
+
+        if self.ns_flags & NS.PID:
+            if fork_clean():
                 os.wait()
                 os._exit(0)
-            libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
 
         os.setuid(PRIVILEGED_UID)
         os.setgid(PRIVILEGED_UID)
         os.setgroups([PRIVILEGED_UID])
 
-        if self.ns_flags & CLONE_NEWUTS:
-            socket.sethostname(self.name)
-
-        if self.ns_flags & CLONE_NEWNET:
+        if self.ns_flags & NS.NET:
+            # TODO: move away from `ip` shellout, and move this before NS.PID
             ip_run("link set lo up")
 
     def entrypoint(self):
@@ -170,20 +102,7 @@ class Host:
             pass
 
     def enter(self, *, uid=PRIVILEGED_UID):
-        ns_names ={
-            CLONE_NEWUSER: "user",
-            CLONE_NEWNS: "mnt",
-            CLONE_NEWCGROUP: "cgroup",
-            CLONE_NEWUTS: "uts",
-            CLONE_NEWIPC: "ipc",
-            CLONE_NEWPID: "pid_for_children",
-            CLONE_NEWNET: "net",
-        }
-        for ns_flag, ns_name in ns_names.items():
-            if ns_flag & (CLONE_NEWUSER | self.ns_flags):
-                ns_path = f"/proc/{self.pid}/ns/{ns_name}"
-                assert libc.setns(os.open(ns_path, 0), 0) == 0, ns_path
-
+        set_ns(self.pid, self.ns_flags)
         os.setuid(uid)
         os.setgid(uid)
         os.setgroups([uid])
@@ -242,7 +161,7 @@ class Host:
 class Network(Host):
     def __init__(self, *args, **kwargs):
         hosts = kwargs.pop("hosts", [])
-        super().__init__(*args, **kwargs, ns_flags=CLONE_NEWNET|CLONE_NEWUTS)
+        super().__init__(*args, **kwargs, ns_flags=(NS.NET | NS.UTS))
 
         self.host_ips = {}
         self.host_edges = collections.defaultdict(set)
