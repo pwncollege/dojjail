@@ -10,6 +10,24 @@ def test_exec():
     assert host.exec(lambda: 1 + 1) == 2
 
 
+def test_entrypoint():
+    class TestHost(Host):
+        def entrypoint(self):
+            return 42
+
+    host = TestHost()
+    host.run()
+
+    assert host.wait() == 42
+
+    try:
+        host.wait()
+    except ChildProcessError:
+        pass
+    else:
+        assert False, "Host not terminated"
+
+
 def test_exception():
     host = Host()
     host.run()

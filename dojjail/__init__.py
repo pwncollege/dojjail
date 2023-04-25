@@ -1,7 +1,6 @@
 import collections
 import os
 import multiprocessing
-import pickle
 import socket
 import signal
 import subprocess
@@ -10,6 +9,7 @@ import tempfile
 import time
 import shutil
 import ctypes
+import weakref
 
 from .libseccomp import seccomp_allow, seccomp_block
 
@@ -111,10 +111,15 @@ class Host:
         Host._next_id += 1
 
         self._pid = multiprocessing.Value("i", 0)
+        self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
 
-        self.runtime_path = tempfile.TemporaryDirectory()
-        os.chown(self.runtime_path.name, self.host_privileged_id, self.host_privileged_id)
-        # TODO: make runtime_path deletion not be a disaster on Exception
+        self.runtime_path = pathlib.Path(tempfile.mkdtemp())
+        os.chown(str(self.runtime_path), self.host_privileged_id, self.host_privileged_id)
+
+        def cleanup():
+            shutil.rmtree(self.runtime_path, ignore_errors=True)
+            self.kill()
+        self._finalizer = weakref.finalize(self, cleanup)
 
     def run(self):
         started_semaphore = multiprocessing.Semaphore(0)
@@ -126,7 +131,9 @@ class Host:
         self.start()
         started_semaphore.release()
         self.seccomp()
-        self.entrypoint()
+        result = self.entrypoint()
+        self._child_pipe.send(result)
+        os._exit(0)
 
     def start(self):
         if self.ns_flags & CLONE_NEWPID:
@@ -148,6 +155,19 @@ class Host:
     def entrypoint(self):
         while True:
             time.sleep(1)
+
+    def wait(self):
+        os.waitpid(self.pid, 0)
+        result = self._parent_pipe.recv()
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def kill(self, *, signal=signal.SIGTERM):
+        try:
+            os.kill(self.pid, signal)
+        except ProcessLookupError:
+            pass
 
     def enter(self, *, uid=PRIVILEGED_UID):
         ns_names ={
@@ -179,7 +199,7 @@ class Host:
         pid = os.fork()
         if pid:
             os.wait()
-            result = pickle.loads(parent_pipe.recv_bytes())
+            result = parent_pipe.recv()
             if isinstance(result, Exception):
                 raise result
             return result
@@ -189,7 +209,7 @@ class Host:
             result = fn()
         except Exception as e:
             result = e
-        child_pipe.send_bytes(pickle.dumps(result))
+        child_pipe.send(result)
         os._exit(0)
 
     def exec_shell(self, cmd, **kwargs):
@@ -200,16 +220,16 @@ class Host:
         return self._pid.value
 
     @property
+    def host_base_id(self):
+        return HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_STEP
+
+    @property
     def host_privileged_id(self):
-        return (HOST_UID_MAP_BASE +
-                self.id * HOST_UID_MAP_STEP +
-                HOST_UID_MAP_PRIVILEGED_OFFSET)
+        return self.host_base_id + HOST_UID_MAP_PRIVILEGED_OFFSET
 
     @property
     def host_unprivileged_id(self):
-        return (HOST_UID_MAP_BASE +
-                self.id * HOST_UID_MAP_STEP +
-                HOST_UID_MAP_UNPRIVILEGED_OFFSET)
+        return self.host_base_id + HOST_UID_MAP_UNPRIVILEGED_OFFSET
 
     @property
     def host_id_map(self):
@@ -249,11 +269,8 @@ class Network(Host):
 
     @property
     def host_id_map(self):
-        uid_map_range = HOST_UID_MAP_STEP * (len(self.hosts) + 1)
-        return (
-            f"{PRIVILEGED_UID} {os.getuid()} 1\n"
-            f"{HOST_UID_MAP_BASE} {HOST_UID_MAP_BASE} {uid_map_range}\n"
-        )
+        host_mappings = "".join(f"{host.host_base_id} {host.host_base_id} {HOST_UID_MAP_STEP}\n" for host in self.hosts)
+        return f"{PRIVILEGED_UID} {PRIVILEGED_UID} 1\n" + host_mappings
 
     def start(self):
         super().start()
@@ -305,7 +322,7 @@ class SimpleFSHost(Host):
 
     @property
     def fs_path(self):
-        return pathlib.Path(self.runtime_path.name) / "fs"
+        return self.runtime_path / "fs"
 
     def start(self):
         super().start()
