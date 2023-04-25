@@ -67,13 +67,13 @@ class Host:
         self._child_pipe.send(result)
         os._exit(0)
 
-    def start(self):
+    def _start(self):
         if self.ns_flags & NS.UTS:
             socket.sethostname(self.name)
-
         if self.ns_flags & NS.PID:
-            if fork_clean():
-                os.wait()
+            pid = fork_clean()
+            if pid:
+                os.waitid(os.P_PID, pid, os.WEXITED)
                 os._exit(0)
 
         os.setuid(PRIVILEGED_UID)
@@ -83,6 +83,9 @@ class Host:
         if self.ns_flags & NS.NET:
             # TODO: move away from `ip` shellout, and move this before NS.PID
             ip_run("link set lo up")
+
+    def start(self):
+        self._start()
 
     def entrypoint(self):
         while True:
@@ -113,15 +116,18 @@ class Host:
         if self.seccomp_block is not None:
             seccomp_block(self.seccomp_block)
 
-    def exec(self, fn, *, uid=PRIVILEGED_UID):
+    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True):
         parent_pipe, child_pipe = multiprocessing.Pipe()
         pid = os.fork()
         if pid:
-            os.wait()
-            result = parent_pipe.recv()
-            if isinstance(result, Exception):
-                raise result
-            return result
+            if wait:
+                os.waitid(os.P_PID, pid, os.WEXITED)
+                result = parent_pipe.recv()
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return
+
         self.enter(uid=uid)
         self.seccomp()
         try:
@@ -133,6 +139,14 @@ class Host:
 
     def exec_shell(self, cmd, **kwargs):
         return self.exec(lambda: subprocess.run(cmd, shell=True, capture_output=True), **kwargs)
+
+    def interact(self):
+        pid = os.fork()
+        if pid:
+            os.waitid(os.P_PID, pid, os.WEXITED)
+            return
+        self.enter()
+        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
 
     @property
     def pid(self):
@@ -224,10 +238,6 @@ class Network(Host):
 
         ip_run("link set bridge0 up")
 
-    def entrypoint(self):
-        while True:
-            time.sleep(1)
-
 
 class SimpleFSHost(Host):
     def __init__(self, *args, **kwargs):
@@ -243,18 +253,7 @@ class SimpleFSHost(Host):
     def fs_path(self):
         return self.runtime_path / "fs"
 
-    def start(self):
-        super().start()
-
-        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
-
-        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev"]:
-            path = self.fs_path / path_name
-            path.mkdir(exist_ok=True)
-
-        os.chroot(self.fs_path)
-        os.chdir("/")
-
+    def create_users(self):
         os.mknod("/dev/null", 0o666)
 
         os.mkdir("/home/user")
@@ -274,12 +273,52 @@ class SimpleFSHost(Host):
                 f"nobody:x:65534:",
             ]))
 
-        try:
-            subprocess.run(["/busybox", "--install"], capture_output=True)
-        except subprocess.CalledProcessError as e:
-            raise Exception(e.stderr)
+    def start(self):
+        self._start()
+
+        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
+
+        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev"]:
+            path = self.fs_path / path_name
+            path.mkdir(exist_ok=True)
+
+        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chdir("/")
+
+        self.create_users()
 
     def enter(self, *args, **kwargs):
         super().enter(*args, **kwargs)
         os.chroot(self.fs_path)
         os.chdir("/")
+
+
+class BusyBoxFSHost(SimpleFSHost):
+    def __init__(self, *args, **kwargs):
+        self.src_path = pathlib.Path(kwargs.get("src_path"))
+        super().__init__(*args, **kwargs)
+
+    def start(self):
+        self._start()
+
+        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
+
+        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev", "usr/bin", "usr/sbin"]:
+            path = self.fs_path / path_name
+            path.mkdir(exist_ok=True)
+
+        # Make a barebones sane file system
+        shutil.copytree("/usr/lib/python3.8", self.fs_path / "usr/lib/python3.8", symlinks=True)
+        # TODO: Remove and statically compile all bins?
+        shutil.copytree("/lib/x86_64-linux-gnu", self.fs_path / "lib/x86_64-linux-gnu", symlinks=True)
+        shutil.copytree("/lib64", self.fs_path / "lib64", symlinks=True)
+
+        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chdir("/")
+
+        try:
+            subprocess.run(["/busybox", "--install"], capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise Exception(e.stderr)
+
+        self.create_users()
