@@ -1,4 +1,5 @@
 import collections
+import stat
 import os
 import multiprocessing
 import socket
@@ -240,6 +241,8 @@ class Network(Host):
 
 
 class SimpleFSHost(Host):
+
+
     def __init__(self, *args, **kwargs):
         self.src_path = pathlib.Path(kwargs.pop("src_path"))
 
@@ -293,9 +296,14 @@ class SimpleFSHost(Host):
         os.chdir("/")
 
 
+
 class BusyBoxFSHost(SimpleFSHost):
+    _flag_val = ""
+
     def __init__(self, *args, **kwargs):
         self.src_path = pathlib.Path(kwargs.get("src_path"))
+        with open ("/flag", 'r') as f:
+            self._flag_val = f.read()
         super().__init__(*args, **kwargs)
 
     def start(self):
@@ -322,3 +330,8 @@ class BusyBoxFSHost(SimpleFSHost):
             raise Exception(e.stderr)
 
         self.create_users()
+
+        if self.name == 'flag_host':
+            with open ("/flag", 'w') as f:
+                f.write(self._flag_val)
+        self_flag_val = ""
