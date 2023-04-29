@@ -28,7 +28,7 @@ UNPRIVILEGED_UID = 1000
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None):
+    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, **kwargs):
         if name is None:
             name = f"Host-{Host._next_id}"
 
