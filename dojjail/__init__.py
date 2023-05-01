@@ -13,6 +13,7 @@ import weakref
 from .ns import NS, new_ns, set_ns
 from .net import ip_run, iptables_load
 from .seccomp import seccomp_allow, seccomp_block
+from .prctl import set_parent_death_signal
 from .utils import fork_clean
 
 
@@ -79,6 +80,8 @@ class Host:
         os.setuid(PRIVILEGED_UID)
         os.setgid(PRIVILEGED_UID)
         os.setgroups([PRIVILEGED_UID])
+
+        set_parent_death_signal()
 
         if self.ns_flags & NS.NET:
             # TODO: move away from `ip` shellout, and move this before NS.PID
