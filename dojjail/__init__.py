@@ -25,6 +25,23 @@ HOST_UID_MAP_STEP = 1000
 PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
 
+import signal
+import logging
+
+class DelayedKeyboardInterrupt:
+
+    def __enter__(self):
+        self.signal_received = False
+        self.old_handler = signal.signal(signal.SIGINT, self.handler)
+
+    def handler(self, sig, frame):
+        self.signal_received = (sig, frame)
+        logging.debug('SIGINT received. Delaying KeyboardInterrupt.')
+
+    def __exit__(self, type, value, traceback):
+        signal.signal(signal.SIGINT, self.old_handler)
+        if self.signal_received:
+            self.old_handler(*self.signal_received)
 
 class Host:
     _next_id = 0
@@ -42,6 +59,7 @@ class Host:
 
         self.id = Host._next_id
         Host._next_id += 1
+        self._target_pid = multiprocessing.Value("i", 0)
 
         self._pid = multiprocessing.Value("i", 0)
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
@@ -64,6 +82,7 @@ class Host:
         self.start()
         started_event.set()
         self.seccomp()
+
         result = self.entrypoint()
         self._child_pipe.send(result)
         os._exit(0)
@@ -73,9 +92,11 @@ class Host:
             socket.sethostname(self.name)
         if self.ns_flags & NS.PID:
             pid = fork_clean()
+            self._target_pid = pid
             if pid:
-                os.waitid(os.P_PID, pid, os.WEXITED)
-                os._exit(0)
+                with DelayedKeyboardInterrupt():
+                    a = os.waitid(os.P_PID, pid, os.WEXITED)
+                    os._exit(0)
 
         os.setuid(PRIVILEGED_UID)
         os.setgid(PRIVILEGED_UID)
@@ -90,7 +111,10 @@ class Host:
 
     def entrypoint(self):
         while True:
-            time.sleep(1)
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                pass
 
     def wait(self):
         os.waitpid(self.pid, 0)
@@ -101,7 +125,10 @@ class Host:
 
     def kill(self, *, signal=signal.SIGTERM):
         try:
+            # This SIGTERM goes to the "waiting python process"
             os.kill(self.pid, signal)
+            # Target being executed in namespaces does not exit gracefully /w SIGTERM
+            os.kill(self._target_pid.value, 9)
         except ProcessLookupError:
             pass
 
@@ -139,7 +166,7 @@ class Host:
         os._exit(0)
 
     def exec_shell(self, cmd, **kwargs):
-        return self.exec(lambda: subprocess.run(cmd, shell=True, capture_output=True), **kwargs)
+        return self.exec((lambda: subprocess.run(cmd, shell=True, capture_output=True)), **kwargs)
 
     def interact(self):
         pid = os.fork()
@@ -335,3 +362,12 @@ class BusyBoxFSHost(SimpleFSHost):
             with open ("/flag", 'w') as f:
                 f.write(self._flag_val)
         self_flag_val = ""
+
+    def interact(self):
+        pid = os.fork()
+        if pid:
+            os.waitid(os.P_PID, pid, os.WEXITED)
+            return
+        self.enter()
+        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
+
