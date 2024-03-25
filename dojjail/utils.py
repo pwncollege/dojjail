@@ -15,6 +15,6 @@ def sbin_which(program):
     for dir in ["/sbin", "/usr/sbin"]:
         path = pathlib.Path(dir, program)
         if path.exists():
-            return path
+            return str(path)
     else:
         raise Exception(f"`{program}` not found")

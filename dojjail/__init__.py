@@ -1,4 +1,5 @@
 import collections
+import stat
 import os
 import multiprocessing
 import socket
@@ -25,11 +26,28 @@ HOST_UID_MAP_STEP = 1000
 PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
 
+import signal
+import logging
+
+class DelayedKeyboardInterrupt:
+
+    def __enter__(self):
+        self.signal_received = False
+        self.old_handler = signal.signal(signal.SIGINT, self.handler)
+
+    def handler(self, sig, frame):
+        self.signal_received = (sig, frame)
+        logging.debug('SIGINT received. Delaying KeyboardInterrupt.')
+
+    def __exit__(self, type, value, traceback):
+        signal.signal(signal.SIGINT, self.old_handler)
+        if self.signal_received:
+            self.old_handler(*self.signal_received)
 
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None):
+    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, **kwargs):
         if name is None:
             name = f"Host-{Host._next_id}"
 
@@ -42,6 +60,7 @@ class Host:
 
         self.id = Host._next_id
         Host._next_id += 1
+        self._target_pid = multiprocessing.Value("i", 0)
 
         self._pid = multiprocessing.Value("i", 0)
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
@@ -64,18 +83,21 @@ class Host:
         self.start()
         started_event.set()
         self.seccomp()
+
         result = self.entrypoint()
         self._child_pipe.send(result)
         os._exit(0)
 
-    def start(self):
+    def _start(self):
         if self.ns_flags & NS.UTS:
             socket.sethostname(self.name)
-
         if self.ns_flags & NS.PID:
-            if fork_clean():
-                os.wait()
-                os._exit(0)
+            pid = fork_clean()
+            self._target_pid = pid
+            if pid:
+                with DelayedKeyboardInterrupt():
+                    a = os.waitid(os.P_PID, pid, os.WEXITED)
+                    os._exit(0)
 
         os.setuid(PRIVILEGED_UID)
         os.setgid(PRIVILEGED_UID)
@@ -87,9 +109,15 @@ class Host:
             # TODO: move away from `ip` shellout, and move this before NS.PID
             ip_run("link set lo up")
 
+    def start(self):
+        self._start()
+
     def entrypoint(self):
         while True:
-            time.sleep(1)
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                pass
 
     def wait(self):
         os.waitpid(self.pid, 0)
@@ -100,7 +128,10 @@ class Host:
 
     def kill(self, *, signal=signal.SIGTERM):
         try:
+            # This SIGTERM goes to the "waiting python process"
             os.kill(self.pid, signal)
+            # Target being executed in namespaces does not exit gracefully /w SIGTERM
+            os.kill(self._target_pid.value, 9)
         except ProcessLookupError:
             pass
 
@@ -116,15 +147,18 @@ class Host:
         if self.seccomp_block is not None:
             seccomp_block(self.seccomp_block)
 
-    def exec(self, fn, *, uid=PRIVILEGED_UID):
+    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True):
         parent_pipe, child_pipe = multiprocessing.Pipe()
         pid = os.fork()
         if pid:
-            os.wait()
-            result = parent_pipe.recv()
-            if isinstance(result, Exception):
-                raise result
-            return result
+            if wait:
+                os.waitid(os.P_PID, pid, os.WEXITED)
+                result = parent_pipe.recv()
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return
+
         self.enter(uid=uid)
         self.seccomp()
         try:
@@ -135,7 +169,15 @@ class Host:
         os._exit(0)
 
     def exec_shell(self, cmd, **kwargs):
-        return self.exec(lambda: subprocess.run(cmd, shell=True, capture_output=True), **kwargs)
+        return self.exec((lambda: subprocess.run(cmd, shell=True, capture_output=True)), **kwargs)
+
+    def interact(self):
+        pid = os.fork()
+        if pid:
+            os.waitid(os.P_PID, pid, os.WEXITED)
+            return
+        self.enter()
+        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
 
     @property
     def pid(self):
@@ -227,12 +269,10 @@ class Network(Host):
 
         ip_run("link set bridge0 up")
 
-    def entrypoint(self):
-        while True:
-            time.sleep(1)
-
 
 class SimpleFSHost(Host):
+
+
     def __init__(self, *args, **kwargs):
         self.src_path = pathlib.Path(kwargs.pop("src_path"))
 
@@ -246,18 +286,7 @@ class SimpleFSHost(Host):
     def fs_path(self):
         return self.runtime_path / "fs"
 
-    def start(self):
-        super().start()
-
-        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
-
-        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev"]:
-            path = self.fs_path / path_name
-            path.mkdir(exist_ok=True)
-
-        os.chroot(self.fs_path)
-        os.chdir("/")
-
+    def create_users(self):
         os.mknod("/dev/null", 0o666)
 
         os.mkdir("/home/user")
@@ -277,7 +306,71 @@ class SimpleFSHost(Host):
                 f"nobody:x:65534:",
             ]))
 
+    def start(self):
+        self._start()
+
+        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
+
+        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev"]:
+            path = self.fs_path / path_name
+            path.mkdir(exist_ok=True)
+
+        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chdir("/")
+
+        self.create_users()
+
     def enter(self, *args, **kwargs):
         super().enter(*args, **kwargs)
         os.chroot(self.fs_path)
         os.chdir("/")
+
+
+
+class BusyBoxFSHost(SimpleFSHost):
+    _flag_val = ""
+
+    def __init__(self, *args, **kwargs):
+        self.src_path = pathlib.Path(kwargs.get("src_path"))
+        with open ("/flag", 'r') as f:
+            self._flag_val = f.read()
+        super().__init__(*args, **kwargs)
+
+    def start(self):
+        self._start()
+
+        shutil.copytree(self.src_path, self.fs_path, symlinks=True)
+
+        for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev", "usr/bin", "usr/sbin"]:
+            path = self.fs_path / path_name
+            path.mkdir(exist_ok=True)
+
+        # Make a barebones sane file system
+        shutil.copytree("/usr/lib/python3.8", self.fs_path / "usr/lib/python3.8", symlinks=True)
+        # TODO: Remove and statically compile all bins?
+        shutil.copytree("/lib/x86_64-linux-gnu", self.fs_path / "lib/x86_64-linux-gnu", symlinks=True)
+        shutil.copytree("/lib64", self.fs_path / "lib64", symlinks=True)
+
+        os.chroot(self.fs_path)  # TODO: seccomp away chroot
+        os.chdir("/")
+
+        try:
+            subprocess.run(["/busybox", "--install"], capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise Exception(e.stderr)
+
+        self.create_users()
+
+        if self.name == 'flag_host':
+            with open ("/flag", 'w') as f:
+                f.write(self._flag_val)
+        self_flag_val = ""
+
+    def interact(self):
+        pid = os.fork()
+        if pid:
+            os.waitid(os.P_PID, pid, os.WEXITED)
+            return
+        self.enter()
+        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
+
