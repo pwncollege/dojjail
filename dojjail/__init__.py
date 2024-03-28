@@ -336,6 +336,12 @@ class BusyBoxFSHost(SimpleFSHost):
             self._flag_val = f.read()
         super().__init__(*args, **kwargs)
 
+    def _pre_chroot(self):
+        '''
+        a dirty hook for custom actions
+        '''
+        pass
+
     def start(self):
         self._start()
 
@@ -351,6 +357,7 @@ class BusyBoxFSHost(SimpleFSHost):
         shutil.copytree("/lib/x86_64-linux-gnu", self.fs_path / "lib/x86_64-linux-gnu", symlinks=True)
         shutil.copytree("/lib64", self.fs_path / "lib64", symlinks=True)
 
+        self._pre_chroot()
         os.chroot(self.fs_path)  # TODO: seccomp away chroot
         os.chdir("/")
 
