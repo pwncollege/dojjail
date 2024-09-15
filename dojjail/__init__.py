@@ -214,6 +214,13 @@ class Network(Host):
         for host in hosts:
             self.dhcp(host)
 
+    def describe(self, ip_filter=lambda h: True):
+        s  = f"Network {self.name}:\n"
+        for host in self.hosts:
+            ip = self.host_ips[host] if ip_filter(host) else "HIDDEN"
+            s += f"- Host {host.name}, IP {ip}\n"
+        return s.rstrip()
+
     @property
     def hosts(self):
         return self.host_ips.keys()
