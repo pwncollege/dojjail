@@ -79,7 +79,7 @@ class Host:
         if pid:
             self._pid.value = pid
             started_event.wait()
-            return
+            return self
         self.start()
         started_event.set()
         self.seccomp()
@@ -230,6 +230,7 @@ class Network(Host):
         self.dhcp(host2)
         self.host_edges[host1].add(host2)
         self.host_edges[host2].add(host1)
+        return self
 
     @property
     def host_id_map(self):
