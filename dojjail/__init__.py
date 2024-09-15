@@ -171,13 +171,13 @@ class Host:
     def exec_shell(self, cmd, **kwargs):
         return self.exec((lambda: subprocess.run(cmd, shell=True, capture_output=True)), **kwargs)
 
-    def interact(self):
+    def interact(self, *, uid=PRIVILEGED_UID):
         pid = os.fork()
         if pid:
             os.waitid(os.P_PID, pid, os.WEXITED)
             return
-        self.enter()
-        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
+        self.enter(uid=uid)
+        os.execve("/usr/bin/env", ["/usr/bin/env", "-i", "/usr/bin/bash", "-i"], os.environ)
 
     @property
     def pid(self):
@@ -380,5 +380,5 @@ class BusyBoxFSHost(SimpleFSHost):
             os.waitid(os.P_PID, pid, os.WEXITED)
             return
         self.enter()
-        os.execve("/usr/bin/bash", ["/usr/bin/bash", "-i"], os.environ)
+        os.execve("/usr/bin/env", ["/usr/bin/env", "-i", "/usr/bin/bash", "-i"], os.environ)
 
