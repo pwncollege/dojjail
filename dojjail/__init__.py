@@ -221,6 +221,15 @@ class Network(Host):
             s += f"- Host {host.name}, IP {ip}\n"
         return s.rstrip()
 
+    def interact(self, *, uid=PRIVILEGED_UID):
+        hostname = input("Which host would you like to interact with? ")
+        try:
+            host = next(h for h in self.hosts if h.name == hostname)
+            uid = PRIVILEGED_UID if input("Launch root shell (y/N)? ").lower() == "y" else UNPRIVILEGED_UID
+            host.interact(uid=uid)
+        except StopIteration:
+            print("No such host!")
+
     @property
     def hosts(self):
         return self.host_ips.keys()
