@@ -211,6 +211,7 @@ class Network(Host):
         self.host_ips = {}
         self.host_edges = collections.defaultdict(set)
         self._next_ip = 1
+        self._available_ips = list(range(255))
         for host in hosts:
             self.dhcp(host)
 
@@ -230,20 +231,36 @@ class Network(Host):
         except StopIteration:
             print("No such host!")
 
+    def print_adj_list(self):
+         for src_host, dst_hosts in self.host_edges.items():
+             for dst_host in dst_hosts:
+                 print(f"{src_host.name} {self.host_ips[src_host]} <-> {self.host_ips[dst_host]} {dst_host.name}")
+         super().run()
+
     @property
     def hosts(self):
         return self.host_ips.keys()
 
-    def dhcp(self, host):
-        if host not in self.host_ips:
-            assert self._next_ip < 255
-            self.host_ips[host] = f"10.0.0.{self._next_ip}"
-            self._next_ip += 1
-        return self.host_ips[host]
+    def _random_ip(self):
+        selected_ip = random.randint(0, len(self._available_ips))
+        self._available_ips.remove(selected_ip)
+        return selected_ip
 
-    def connect(self, host1, host2):
-        self.dhcp(host1)
-        self.dhcp(host2)
+    def dhcp(self, host, randomize=False):
+        if randomize:
+            assert self._next_ip == 1
+            self.host_ips[host] = f"10.0.0.{self._random_ip()}"
+            return self.host_ips[host]
+        else:
+            if host not in self.host_ips:
+                assert self._next_ip < 255
+                self.host_ips[host] = f"10.0.0.{self._next_ip}"
+                self._next_ip += 1
+            return self.host_ips[host]
+
+    def connect(self, host1, host2, randomize=False):
+        self.dhcp(host1, randomize=False)
+        self.dhcp(host2, randomize=False)
         self.host_edges[host1].add(host2)
         self.host_edges[host2].add(host1)
         return self
@@ -286,10 +303,30 @@ class Network(Host):
 
         ip_run("link set bridge0 up")
 
+    def generate_linear_network(self, host_list, start, end, min_len=4, max_len=8):
+        prev_host = start
+
+        length = random.randint(min_len, max_len)
+        for _ in range(length):
+            selected_host = host_list[random.randint(0, len(host_list))].copy()
+            self.connect(prev-host, selected_host, randomize=True)
+            prev_host = selected_host
+        self.connect(prev_host, end)
+
+    def generate_random_network(self, host_list, size, start, end, min_depth=4):
+        assert size > min_depth
+
+        depth = random.randint(min_depth, size)
+        self.generate_linear_network(host_list, depth, start, end, min_len=depth, max_len=depth)
+
+        rand_node_cnt = size - depth
+
+        for i in range(rand_node_cnt):
+            selected_src = list(self.host_edges.keys())[random.randint(0, len(self.host_edges))]
+            selected_dest = host_list[random.randint(0, len(host_list))].copy()
+            self.connect(selected_src, selected_dest, randomize=True)
 
 class SimpleFSHost(Host):
-
-
     def __init__(self, *args, **kwargs):
         self.src_path = pathlib.Path(kwargs.pop("src_path"))
 
@@ -362,6 +399,8 @@ class BusyBoxFSHost(SimpleFSHost):
     def start(self):
         self._start()
 
+        import IPython
+        IPython.embed()
         shutil.copytree(self.src_path, self.fs_path, symlinks=True)
 
         for path_name in ["bin", "sbin", "usr", "root", "home", "etc", "tmp", "dev", "usr/bin", "usr/sbin"]:
@@ -369,7 +408,7 @@ class BusyBoxFSHost(SimpleFSHost):
             path.mkdir(exist_ok=True)
 
         # Make a barebones sane file system
-        shutil.copytree("/usr/lib/python3.8", self.fs_path / "usr/lib/python3.8", symlinks=True)
+        shutil.copytree("/usr/lib/python3", self.fs_path / "usr/lib/python3", symlinks=True)
         # TODO: Remove and statically compile all bins?
         shutil.copytree("/lib/x86_64-linux-gnu", self.fs_path / "lib/x86_64-linux-gnu", symlinks=True)
         shutil.copytree("/lib64", self.fs_path / "lib64", symlinks=True)
