@@ -47,7 +47,7 @@ class DelayedKeyboardInterrupt:
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, **kwargs):
+    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, persist=False, **kwargs):
         if name is None:
             name = f"Host-{Host._next_id}"
 
@@ -68,9 +68,12 @@ class Host:
         self.runtime_path = pathlib.Path(tempfile.mkdtemp())
         os.chown(str(self.runtime_path), self.host_privileged_id, self.host_privileged_id)
 
+        self.persist = persist
+
         def cleanup():
-            shutil.rmtree(self.runtime_path, ignore_errors=True)
-            self.kill()
+            if not self.persist:
+                shutil.rmtree(self.runtime_path, ignore_errors=True)
+                self.kill()
         self._finalizer = weakref.finalize(self, cleanup)
 
     def run(self):
@@ -92,7 +95,7 @@ class Host:
         if self.ns_flags & NS.UTS:
             socket.sethostname(self.name)
         if self.ns_flags & NS.PID:
-            pid = fork_clean()
+            pid = fork_clean(parent_death_signal=None if self.persist else 9)
             self._target_pid = pid
             if pid:
                 with DelayedKeyboardInterrupt():
@@ -103,7 +106,8 @@ class Host:
         os.setgid(PRIVILEGED_UID)
         os.setgroups([PRIVILEGED_UID])
 
-        set_parent_death_signal()
+        if not self.persist:
+            set_parent_death_signal()
 
         if self.ns_flags & NS.NET:
             # TODO: move away from `ip` shellout, and move this before NS.PID
