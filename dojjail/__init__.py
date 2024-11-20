@@ -172,16 +172,17 @@ class Host:
         child_pipe.send(result)
         os._exit(0)
 
-    def exec_shell(self, cmd, **kwargs):
-        return self.exec((lambda: subprocess.run(cmd, shell=True, capture_output=True)), **kwargs)
+    def exec_shell(self, cmd, uid=PRIVILEGED_UID, wait=True, attach=False, **kwargs):
+        if attach:
+            kwargs.setdefault("stdin", 0)
+            kwargs.setdefault("stdout", 1)
+            kwargs.setdefault("stderr", 2)
+        else:
+            kwargs.setdefault("capture_output", True)
+        return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait)
 
     def interact(self, *, uid=PRIVILEGED_UID):
-        pid = os.fork()
-        if pid:
-            os.waitid(os.P_PID, pid, os.WEXITED)
-            return
-        self.enter(uid=uid)
-        os.execve("/usr/bin/env", ["/usr/bin/env", "-i", "/usr/bin/bash", "-i"], os.environ)
+        self.exec_shell("/bin/env -i /bin/bash -i", attach=True)
 
     @property
     def pid(self):
