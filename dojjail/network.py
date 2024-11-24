@@ -1,4 +1,6 @@
 import collections
+import subprocess
+import sys
 
 from .ns import NS
 from .net import ip_run, iptables_load
@@ -15,6 +17,9 @@ class Network(Host):
 		self._available_ips = list(range(255))
 		for host in hosts:
 			self.dhcp(host)
+
+		if b"br_netfilter" not in subprocess.run(["/sbin/lsmod"], capture_output=True, check=True).stdout:
+			print("WARNING: 'br_netfilter' kernel module is not loaded. Network filtering with NOT work.", file=sys.stderr)
 
 	def describe(self, ip_filter=lambda h: True):
 		s  = f"Network {self.name}:\n"

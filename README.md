@@ -179,3 +179,7 @@ pid 1:                                    --- seccomp() --- entrypoint()        
 - Once the `Host` has finished initializing, the initial process is able to resume and may call `Host.exec(fn)`, which `fork()`s
 - The parent process waits for `fn()` to finish executing
 - The child process calls `Host.enter()`, which calls `set_ns()` to enter the `Host`s namespace, and then calls `Host.seccomp()` and `fn()`
+
+# Notes
+
+You **MUST** have the `br_netfilter` kernel module loaded for network filtering to work, otherwise packets get bridged directly between network hosts and iptables never sees it to restrict connections.
