@@ -1,18 +1,19 @@
-import collections
+import multiprocessing
 import subprocess
+import random
 import sys
 
 from .ns import NS
 from .net import ip_run, iptables_load
-from .host import Host, HOST_UID_MAP_STEP, PRIVILEGED_UID, UNPRIVILEGED_UID
+from .host import Host, HOST_UID_MAP_BASE, HOST_UID_MAP_STEP, PRIVILEGED_UID, UNPRIVILEGED_UID, MAX_HOSTS
 
 class Network(Host):
 	def __init__(self, *args, **kwargs):
 		hosts = kwargs.pop("hosts", [])
 		super().__init__(*args, **kwargs, ns_flags=(NS.NET | NS.UTS))
 
-		self.host_ips = {}
-		self.host_edges = collections.defaultdict(set)
+		self.host_ips = { }
+		self.host_edges = { }
 		self._next_ip = 1
 		self._available_ips = list(range(255))
 		for host in hosts:
@@ -67,24 +68,19 @@ class Network(Host):
 	def connect(self, host1, host2, randomize=False):
 		self.dhcp(host1, randomize=False)
 		self.dhcp(host2, randomize=False)
-		self.host_edges[host1].add(host2)
-		self.host_edges[host2].add(host1)
+		self.host_edges.setdefault(host1, set()).add(host2)
+		self.host_edges.setdefault(host2, set()).add(host1)
 		return self
 
-	@property
-	def host_id_map(self):
-		host_mappings = "".join(f"{host.host_base_id} {host.host_base_id} {HOST_UID_MAP_STEP}\n" for host in self.hosts)
-		return f"{PRIVILEGED_UID} {PRIVILEGED_UID} 1\n" + host_mappings
-
-	def start(self):
-		super().start()
-
-		ip_run("link add name bridge0 type bridge")
-
+	def initialize_hosts(self):
 		for host, host_ip in self.host_ips.items():
+			if ip_run(f"link show veth{host.id}", check=False).stdout:
+				continue
+
 			ip_run(f"link add veth{host.id} type veth peer name veth{host.id}-child")
 			ip_run(f"link set veth{host.id} master bridge0")
 			host.run()
+			print(host.name, host.pid)
 			ip_run(f"link set veth{host.id} up")
 			ip_run(f"link set veth{host.id}-child netns {host.pid}")
 			# TODO: host `ip_run` before chroot
@@ -92,6 +88,7 @@ class Network(Host):
 							   ip_run(f"addr add {host_ip}/24 dev eth0"),
 							   ip_run("link set eth0 up")))
 
+	def connect_hosts(self):
 		iptables_rules = [
 			"*filter",
 			":INPUT ACCEPT [0:0]",
@@ -107,6 +104,19 @@ class Network(Host):
 		iptables_rules.append("")
 		iptables_load("\n".join(iptables_rules))
 
+	@property
+	def host_id_map(self):
+		host_mappings = "".join(f"{base} {base} {HOST_UID_MAP_STEP}\n" for base in range(
+			HOST_UID_MAP_BASE, HOST_UID_MAP_BASE+HOST_UID_MAP_STEP*MAX_HOSTS, HOST_UID_MAP_STEP
+		))
+		return f"{PRIVILEGED_UID} {PRIVILEGED_UID} 1\n" + host_mappings
+
+	def start(self):
+		super().start()
+
+		ip_run("link add name bridge0 type bridge")
+		self.initialize_hosts()
+		self.connect_hosts()
 		ip_run("link set bridge0 up")
 
 	def generate_linear_network(self, host_list, start, end, min_len=4, max_len=8):
@@ -115,7 +125,7 @@ class Network(Host):
 		length = random.randint(min_len, max_len)
 		for _ in range(length):
 			selected_host = host_list[random.randint(0, len(host_list))].copy()
-			self.connect(prev-host, selected_host, randomize=True)
+			self.connect(prev_host, selected_host, randomize=True)
 			prev_host = selected_host
 		self.connect(prev_host, end)
 
@@ -123,11 +133,11 @@ class Network(Host):
 		assert size > min_depth
 
 		depth = random.randint(min_depth, size)
-		self.generate_linear_network(host_list, depth, start, end, min_len=depth, max_len=depth)
+		self.generate_linear_network(host_list, start, end, min_len=depth, max_len=depth)
 
 		rand_node_cnt = size - depth
 
-		for i in range(rand_node_cnt):
+		for _ in range(rand_node_cnt):
 			selected_src = list(self.host_edges.keys())[random.randint(0, len(self.host_edges))]
 			selected_dest = host_list[random.randint(0, len(host_list))].copy()
 			self.connect(selected_src, selected_dest, randomize=True)

@@ -24,6 +24,11 @@ HOST_UID_MAP_STEP = 1000
 PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
 
+MAX_HOSTS = 100
+
+host_pids = [ multiprocessing.Value("i", 0) for _ in range(MAX_HOSTS)]
+host_target_pids = [ multiprocessing.Value("i", 0) for _ in range(MAX_HOSTS)]
+
 class DelayedKeyboardInterrupt:
     #pylint:disable=attribute-defined-outside-init
 
@@ -43,7 +48,8 @@ class DelayedKeyboardInterrupt:
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, persist=False, **kwargs):
+    #pylint:disable=redefined-outer-name
+    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, persist=False):
         if name is None:
             name = f"Host-{Host._next_id}"
 
@@ -56,9 +62,6 @@ class Host:
 
         self.id = Host._next_id
         Host._next_id += 1
-        self._target_pid = multiprocessing.Value("i", 0)
-
-        self._pid = multiprocessing.Value("i", 0)
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
 
         self.runtime_path = pathlib.Path(tempfile.mkdtemp())
@@ -74,11 +77,14 @@ class Host:
 
         self.setup_fs()
 
-    def run(self):
+    def run(self): #pylint:disable=inconsistent-return-statements
+        if self.pid:
+            return self
+
         started_event = multiprocessing.Event()
         pid = new_ns(self.ns_flags, self.host_id_map)
         if pid:
-            self._pid.value = pid
+            host_pids[self.id].value = pid
             started_event.wait()
             return self
         self.start()
@@ -94,7 +100,7 @@ class Host:
             socket.sethostname(self.name)
         if self.ns_flags & NS.PID:
             pid = fork_clean(parent_death_signal=None if self.persist else 9)
-            self._target_pid = pid
+            host_target_pids[self.id] = pid
             if pid:
                 with DelayedKeyboardInterrupt():
                     os.waitid(os.P_PID, pid, os.WEXITED)
@@ -142,11 +148,13 @@ class Host:
             # This SIGTERM goes to the "waiting python process"
             os.kill(self.pid, signal)
             # Target being executed in namespaces does not exit gracefully /w SIGTERM
-            os.kill(self._target_pid.value, 9)
+            os.kill(host_target_pids[self.id].value, 9)
         except ProcessLookupError:
             pass
 
     def enter(self, *, uid=PRIVILEGED_UID):
+        assert self.pid
+
         set_ns(self.pid, self.ns_flags)
         os.setuid(uid)
         os.setgid(uid)
@@ -158,7 +166,7 @@ class Host:
         if self.seccomp_block is not None:
             seccomp_block(self.seccomp_block)
 
-    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True):
+    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True): #pylint:disable=inconsistent-return-statements
         parent_pipe, child_pipe = multiprocessing.Pipe()
         pid = os.fork()
         if pid:
@@ -174,7 +182,9 @@ class Host:
         self.seccomp()
         try:
             result = fn()
-        except Exception as e:
+        except Exception as e: #pylint:disable=broad-exception-caught
+            import traceback
+            traceback.print_exc()
             result = e
         child_pipe.send(result)
         os._exit(0)
@@ -186,14 +196,14 @@ class Host:
             kwargs.setdefault("stderr", 2)
         else:
             kwargs.setdefault("capture_output", True)
-        return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait)
+        return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait) #pylint:disable=subprocess-run-check
 
     def interact(self, **kwargs):
         self.exec_shell("/bin/env -i /bin/bash -i", attach=True, **kwargs)
 
     @property
     def pid(self):
-        return self._pid.value
+        return host_pids[self.id].value
 
     @property
     def host_base_id(self):

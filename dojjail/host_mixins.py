@@ -76,9 +76,9 @@ class HostDirMixin:
 
 class CHRootMixin:
 	def __init__(self, *args, **kwargs):
-		syscall_blocks = kwargs.pop("syscall_blocks", [])
-		syscall_blocks.append("chroot")
-		super().__init__(*args, syscall_blocks=syscall_blocks, **kwargs)
+		seccomp_block = kwargs.pop("seccomp_block", [])
+		seccomp_block.append("chroot")
+		super().__init__(*args, seccomp_block=seccomp_block, **kwargs)
 
 	@contextlib.contextmanager
 	def tmp_chroot_ctx(self):
