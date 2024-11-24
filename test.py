@@ -1,17 +1,17 @@
+import tempfile
+import dojjail
 import os
-
-from dojjail import Host, Network
 
 
 def test_exec():
-    host = Host()
+    host = dojjail.Host()
     host.run()
 
     assert host.exec(lambda: 1 + 1) == 2
 
 
 def test_entrypoint():
-    class TestHost(Host):
+    class TestHost(dojjail.Host):
         def entrypoint(self):
             return 42
 
@@ -29,7 +29,7 @@ def test_entrypoint():
 
 
 def test_exception():
-    host = Host()
+    host = dojjail.Host()
     host.run()
 
     def raise_exception():
@@ -42,13 +42,30 @@ def test_exception():
     else:
         assert False, "Exception not raised"
 
+def test_busybox():
+    host = dojjail.BusyBoxFSHost()
+    host.run()
+    assert b"bin" in host.exec_shell("ls /").stdout
+    assert host.exec_shell("ls /tmp").stdout == b""
+    assert not host.exec(lambda: os.path.exists("/flag"))
+
+    host = dojjail.BusyBoxFSHost(flag_source="/flag")
+    host.run()
+    assert host.exec(lambda: os.path.exists("/flag"))
+    assert host.exec_shell("cat /flag") != b""
+
+def test_simplefs():
+    td = tempfile.mkdtemp()
+    host = dojjail.SimpleFSHost(src_path=td)
+    host.run()
+    print(host.exec(lambda: os.listdir("/")))
 
 def test_networking():
-    network = Network()
+    network = dojjail.Network()
 
-    host_1 = Host()
-    host_2 = Host()
-    host_3 = Host()
+    host_1 = dojjail.Host()
+    host_2 = dojjail.Host()
+    host_3 = dojjail.Host()
 
     network.connect(host_1, host_2)
     network.connect(host_2, host_3)
@@ -72,7 +89,7 @@ def test_networking():
 
 
 def test_seccomp():
-    host = Host(seccomp_block=["getppid"])
+    host = dojjail.Host(seccomp_block=["getppid"])
     host.run()
 
     assert host.exec(lambda: os.getppid()) == -1
