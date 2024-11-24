@@ -68,7 +68,7 @@ class Host:
 
         def cleanup():
             if not self.persist:
-                #shutil.rmtree(self.runtime_path, ignore_errors=True)
+                shutil.rmtree(self.runtime_path, ignore_errors=True)
                 self.kill()
         self._finalizer = weakref.finalize(self, cleanup)
 
