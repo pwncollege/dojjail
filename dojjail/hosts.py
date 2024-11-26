@@ -2,10 +2,10 @@ from .host_mixins import *
 from .host import *
 
 class CHRootedHost(UsersMixin, CHRootMixin, PythonLibMixin, FlagMixin, DevMixin, RuntimeFSMixin, Host):
-	pass
+    pass
 
 class SimpleFSHost(IPBinMixin, HostDirMixin, CHRootedHost):
-	pass
+    pass
 
 class BusyBoxFSHost(BusyBoxMixin, CHRootedHost):
-	pass
+    pass
