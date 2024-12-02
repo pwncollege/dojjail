@@ -18,6 +18,7 @@ class Network(Host):
         self._available_ips = list(range(255))
         for host in hosts:
             self.dhcp(host)
+            self.host_edges[host] = set(other_host for other_host in hosts if other_host is not host)
 
         if b"br_netfilter" not in subprocess.run(["/sbin/lsmod"], capture_output=True, check=True).stdout:
             print("WARNING: 'br_netfilter' kernel module is not loaded. Network filtering with NOT work.", file=sys.stderr)
@@ -72,23 +73,7 @@ class Network(Host):
         self.host_edges.setdefault(host2, set()).add(host1)
         return self
 
-    def initialize_hosts(self):
-        for host, host_ip in self.host_ips.items():
-            if ip_run(f"link show veth{host.id}", check=False).stdout:
-                continue
-
-            ip_run(f"link add veth{host.id} type veth peer name veth{host.id}-child")
-            ip_run(f"link set veth{host.id} master bridge0")
-            host.run()
-            print(host.name, host.pid)
-            ip_run(f"link set veth{host.id} up")
-            ip_run(f"link set veth{host.id}-child netns {host.pid}")
-            # TODO: host `ip_run` before chroot
-            host.exec(lambda: (ip_run(f"link set veth{host.id}-child name eth0"),
-                               ip_run(f"addr add {host_ip}/24 dev eth0"),
-                               ip_run("link set eth0 up")))
-
-    def connect_hosts(self):
+    def setup_iptables(self):
         iptables_rules = [
             "*filter",
             ":INPUT ACCEPT [0:0]",
@@ -104,20 +89,36 @@ class Network(Host):
         iptables_rules.append("")
         iptables_load("\n".join(iptables_rules))
 
+    def setup_hosts(self, *args, **kwargs):
+        for host, host_ip in self.host_ips.items():
+            if ip_run(f"link show veth{host.id}", check=False).stdout:
+                continue
+
+            ip_run(f"link add veth{host.id} type veth peer name veth{host.id}-child")
+            ip_run(f"link set veth{host.id} master bridge0")
+            host.run(*args, **kwargs)
+            ip_run(f"link set veth{host.id} up")
+            ip_run(f"link set veth{host.id}-child netns {host.pid}")
+            # TODO: host `ip_run` before chroot
+            host.exec(lambda: (ip_run(f"link set veth{host.id}-child name eth0"),
+                               ip_run(f"addr add {host_ip}/24 dev eth0"),
+                               ip_run("link set eth0 up")))
+
+    def start(self):
+        super().start()
+        network_ready_event = multiprocessing.Event()
+        ip_run("link add name bridge0 type bridge")
+        self.setup_iptables()
+        self.setup_hosts(ready_event=network_ready_event)
+        ip_run("link set bridge0 up")
+        network_ready_event.set()
+
     @property
     def host_id_map(self):
         host_mappings = "".join(f"{base} {base} {HOST_UID_MAP_STEP}\n" for base in range(
             HOST_UID_MAP_BASE, HOST_UID_MAP_BASE+HOST_UID_MAP_STEP*MAX_HOSTS, HOST_UID_MAP_STEP
         ))
         return f"{PRIVILEGED_UID} {PRIVILEGED_UID} 1\n" + host_mappings
-
-    def start(self):
-        super().start()
-
-        ip_run("link add name bridge0 type bridge")
-        self.initialize_hosts()
-        self.connect_hosts()
-        ip_run("link set bridge0 up")
 
     def generate_linear_network(self, host_list, start, end, min_len=4, max_len=8):
         prev_host = start

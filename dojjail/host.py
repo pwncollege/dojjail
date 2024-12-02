@@ -77,7 +77,7 @@ class Host:
 
         self.setup_fs()
 
-    def run(self): #pylint:disable=inconsistent-return-statements
+    def run(self, *, ready_event=None): #pylint:disable=inconsistent-return-statements
         if self.pid:
             return self
 
@@ -89,8 +89,10 @@ class Host:
             return self
         self.start()
         started_event.set()
-        self.seccomp()
 
+        if ready_event:
+            ready_event.wait()
+        self.seccomp()
         result = self.entrypoint() #pylint:disable=assignment-from-none,assignment-from-no-return
         self._child_pipe.send(result)
         os._exit(0)
