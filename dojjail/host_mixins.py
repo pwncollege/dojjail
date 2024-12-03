@@ -147,6 +147,9 @@ class BusyBoxMixin(CHRootMixin, LSBMixin):
             subprocess.run(["/busybox", "--install", "bin"], check=True, capture_output=True)
             os.unlink("/busybox")
 
+    def interact(self, **kwargs):
+        self.exec_shell("/bin/env -i /bin/sh -i", attach=True, **kwargs)
+
 class IPBinMixin(HostLibsMixin):
     def setup_fs(self):
         super().setup_fs()
