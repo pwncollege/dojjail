@@ -144,6 +144,7 @@ class BusyBoxMixin(CHRootMixin, LSBMixin):
         shutil.copy2("/usr/bin/busybox", self.fs_path / "busybox")
         with self.tmp_chroot_ctx():
             subprocess.run(["/busybox", "--install"], check=True, capture_output=True)
+            subprocess.run(["/busybox", "--install", "bin"], check=True, capture_output=True)
             os.unlink("/busybox")
 
 class IPBinMixin(HostLibsMixin):
