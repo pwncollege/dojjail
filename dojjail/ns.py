@@ -11,6 +11,8 @@ from .utils import fork_clean
 libc = ctypes.CDLL("libc.so.6")
 
 
+PR_SET_DUMPABLE   = 4
+
 class NS(enum.IntFlag):
     USER   = 0x10000000
     MOUNT  = 0x00020000
@@ -30,6 +32,8 @@ def new_ns(ns_flags=NS.ALL, uid_map=None):
 
     unshared_event = multiprocessing.Event()
     uid_mapped_event = multiprocessing.Event()
+
+    libc.prctl(PR_SET_DUMPABLE, True)
 
     pid = fork_clean()
 
