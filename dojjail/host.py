@@ -160,7 +160,7 @@ class Host:
                 if isinstance(result, Exception):
                     raise result
                 return result
-            return
+            return pid
 
         self.enter(uid=uid)
         self.seccomp()
