@@ -26,7 +26,9 @@ def new_ns(ns_flags=NS.ALL, uid_map=None):
     # TODO: use `clone` instead of `unshare` to avoid `fork` for `pid 1`
 
     if uid_map is None:
-        uid_map = f"0 {os.getuid()} 1\n"
+        uid_map = {
+            0: os.getuid(),
+        }
 
     unshared_event = multiprocessing.Event()
     uid_mapped_event = multiprocessing.Event()
@@ -47,10 +49,11 @@ def new_ns(ns_flags=NS.ALL, uid_map=None):
 
 
 def set_uid_map(pid, uid_map):
+    map = "".join(f"{uid} {parent_uid} 1\n" for uid, parent_uid in uid_map.items())
     with open(f"/proc/{pid}/uid_map", "w") as f:
-        f.write(uid_map)
+        f.write(map)
     with open(f"/proc/{pid}/gid_map", "w") as f:
-        f.write(uid_map)
+        f.write(map)
 
 
 def set_ns(pid, ns_flags=NS.ALL):

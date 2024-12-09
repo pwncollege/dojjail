@@ -17,9 +17,7 @@ from .prctl import set_parent_death_signal
 from .utils import fork_clean
 
 HOST_UID_MAP_BASE = 100000
-HOST_UID_MAP_PRIVILEGED_OFFSET = 0
-HOST_UID_MAP_UNPRIVILEGED_OFFSET = 1
-HOST_UID_MAP_STEP = 1000
+HOST_UID_MAP_LENGTH = 1000
 
 PRIVILEGED_UID = 0
 UNPRIVILEGED_UID = 1000
@@ -65,7 +63,7 @@ class Host:
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
 
         self.runtime_path = pathlib.Path(tempfile.mkdtemp())
-        os.chown(str(self.runtime_path), self.host_privileged_id, self.host_privileged_id)
+        os.chown(str(self.runtime_path), self.privileged_uid, self.privileged_uid)
 
         self.persist = persist
 
@@ -82,7 +80,7 @@ class Host:
             return self
 
         started_event = multiprocessing.Event()
-        pid = new_ns(self.ns_flags, self.host_id_map)
+        pid = new_ns(self.ns_flags, self.uid_map)
         if pid:
             host_pids[self.id].value = pid
             started_event.wait()
@@ -208,20 +206,8 @@ class Host:
         return host_pids[self.id].value
 
     @property
-    def host_base_id(self):
-        return HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_STEP
-
-    @property
-    def host_privileged_id(self):
-        return self.host_base_id + HOST_UID_MAP_PRIVILEGED_OFFSET
-
-    @property
-    def host_unprivileged_id(self):
-        return self.host_base_id + HOST_UID_MAP_UNPRIVILEGED_OFFSET
-
-    @property
-    def host_id_map(self):
-        return (
-            f"{PRIVILEGED_UID} {self.host_privileged_id} 1\n"
-            f"{UNPRIVILEGED_UID} {self.host_unprivileged_id} 1\n"
-        )
+    def uid_map(self):
+        return {
+            PRIVILEGED_UID: (HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH) + 0,
+            UNPRIVILEGED_UID: (HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH) + 1,
+        }
