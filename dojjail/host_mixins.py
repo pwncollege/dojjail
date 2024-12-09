@@ -1,22 +1,31 @@
 import contextlib
+import pathlib
 import subprocess
 import shutil
 import sys
 import os
+import tempfile
 
 from .host import PRIVILEGED_UID, UNPRIVILEGED_UID
 from .utils import sbin_which
 
 class RuntimeFSMixin:
-    @property
-    def fs_path(self):
-        return self.runtime_path / "fs"
+    def __init__(self, *args, **kwargs):
+        self.fs_path = pathlib.Path(tempfile.mkdtemp())
+        super().__init__(*args, **kwargs)
+
+    def run(self, *args, **kwargs):
+        self.setup_fs()
+        super().run(*args, **kwargs)
 
     def setup_fs(self):
-        super().setup_fs()
         self.fs_path.mkdir(exist_ok=True)
 
-class LSBMixin:
+    def kill(self, *args, **kwargs):
+        shutil.rmtree(self.fs_path, ignore_errors=True)
+        super().kill(*args, **kwargs)
+
+class LSBMixin(RuntimeFSMixin):
     def setup_fs(self):
         super().setup_fs()
 
@@ -64,7 +73,7 @@ class FlagMixin(RuntimeFSMixin):
             with open(self.fs_path / "flag", "w") as o, open(self._flag_source) as i:
                 o.write(i.read())
 
-class HostDirMixin:
+class HostDirMixin(RuntimeFSMixin):
     def __init__(self, src_path, *args, **kwargs):
         self.src_path = src_path
         super().__init__(*args, **kwargs)
@@ -74,7 +83,7 @@ class HostDirMixin:
         shutil.copytree(self.src_path, self.fs_path, symlinks=True, dirs_exist_ok=True)
         os.chmod(self.fs_path, 0o755)
 
-class CHRootMixin:
+class CHRootMixin(RuntimeFSMixin):
     def __init__(self, *args, **kwargs):
         seccomp_block = kwargs.pop("seccomp_block", [])
         seccomp_block.append("chroot")

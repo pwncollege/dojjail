@@ -1,10 +1,7 @@
 import multiprocessing
 import subprocess
-import tempfile
-import pathlib
 import logging
 import weakref
-import shutil
 import socket
 import signal
 import time
@@ -62,18 +59,9 @@ class Host:
         Host._next_id += 1
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
 
-        self.runtime_path = pathlib.Path(tempfile.mkdtemp())
-        os.chown(str(self.runtime_path), self.privileged_uid, self.privileged_uid)
-
         self.persist = persist
-
-        def cleanup():
-            if not self.persist:
-                shutil.rmtree(self.runtime_path, ignore_errors=True)
-                self.kill()
-        self._finalizer = weakref.finalize(self, cleanup)
-
-        self.setup_fs()
+        if not self.persist:
+            self._finalizer = weakref.finalize(self, self.kill)
 
     def run(self, *, ready_event=None): #pylint:disable=inconsistent-return-statements
         if self.pid:
@@ -120,9 +108,6 @@ class Host:
             # TODO: move away from `ip` shellout, and move this before NS.PID
             ip_run("link set lo up")
 
-    def setup_fs(self):
-        pass
-
     def start(self):
         self.setup_ns()
         self.setup_uid()
@@ -154,7 +139,6 @@ class Host:
 
     def enter(self, *, uid=PRIVILEGED_UID):
         assert self.pid
-
         set_ns(self.pid, self.ns_flags)
         os.setuid(uid)
         os.setgid(uid)
