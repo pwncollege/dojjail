@@ -5,7 +5,7 @@ import sys
 
 from .ns import NS
 from .net import ip_run, iptables_load
-from .host import Host, HOST_UID_MAP_BASE, HOST_UID_MAP_STEP, PRIVILEGED_UID, UNPRIVILEGED_UID, MAX_HOSTS
+from .host import Host, PRIVILEGED_UID, UNPRIVILEGED_UID
 
 class Network(Host):
     def __init__(self, *args, **kwargs):
@@ -44,10 +44,6 @@ class Network(Host):
              for dst_host in dst_hosts:
                  print(f"{src_host.name} {self.host_ips[src_host]} <-> {self.host_ips[dst_host]} {dst_host.name}")
          super().run()
-
-    @property
-    def hosts(self):
-        return self.host_ips.keys()
 
     def _random_ip(self):
         selected_ip = random.randint(0, len(self._available_ips))
@@ -114,11 +110,15 @@ class Network(Host):
         network_ready_event.set()
 
     @property
-    def host_id_map(self):
-        host_mappings = "".join(f"{base} {base} {HOST_UID_MAP_STEP}\n" for base in range(
-            HOST_UID_MAP_BASE, HOST_UID_MAP_BASE+HOST_UID_MAP_STEP*MAX_HOSTS, HOST_UID_MAP_STEP
-        ))
-        return f"{PRIVILEGED_UID} {PRIVILEGED_UID} 1\n" + host_mappings
+    def hosts(self):
+        return self.host_ips.keys()
+
+    @property
+    def uid_map(self):
+        return {
+            **{user_id: user_id for host in self.hosts for user_id in host.user_ids.values()},
+            PRIVILEGED_UID: PRIVILEGED_UID,
+        }
 
     def generate_linear_network(self, host_list, start, end, min_len=4, max_len=8):
         prev_host = start
