@@ -116,7 +116,7 @@ class Network(Host):
     @property
     def uid_map(self):
         return {
-            **{user_id: user_id for host in self.hosts for user_id in host.user_ids.values()},
+            **{user_id: user_id for host in self.hosts for user_id in host.uid_map.values()},
             PRIVILEGED_UID: PRIVILEGED_UID,
         }
 
