@@ -1,70 +1,56 @@
 import multiprocessing
 import subprocess
-import random
 import sys
 
 from .ns import NS
 from .net import ip_run, iptables_load
-from .host import Host, PRIVILEGED_UID, UNPRIVILEGED_UID
+from .host import Host, PRIVILEGED_UID
+
+
+if b"br_netfilter" not in subprocess.run(["/sbin/lsmod"], capture_output=True, check=True).stdout:
+    print("WARNING: 'br_netfilter' kernel module is not loaded. Network filtering with NOT work.", file=sys.stderr)
+
 
 class Network(Host):
     def __init__(self, *args, **kwargs):
+        subnet = kwargs.pop("subnet", "10.0.0.0/24")
         hosts = kwargs.pop("hosts", [])
+
         super().__init__(*args, **kwargs, ns_flags=(NS.NET | NS.UTS))
+
+        self.subnet = subnet
 
         self.host_ips = { }
         self.host_edges = { }
-        self._next_ip = 1
-        self._available_ips = list(range(255))
-        for host in hosts:
-            self.dhcp(host)
+
+        if not isinstance(hosts, dict):
+            hosts = {host: None for host in hosts}
+
+        for host, ip in hosts.items():
+            self.assign_ip_address(host, ip)
             self.host_edges[host] = set(other_host for other_host in hosts if other_host is not host)
 
-        if b"br_netfilter" not in subprocess.run(["/sbin/lsmod"], capture_output=True, check=True).stdout:
-            print("WARNING: 'br_netfilter' kernel module is not loaded. Network filtering with NOT work.", file=sys.stderr)
+    def assign_ip_address(self, host, ip=None):
+        if host in self.host_ips:
+            raise RuntimeError("Host `{host}` requested IP address `{ip}`, but already has IP address `{self.host_ips[host]}`")
 
-    def describe(self, ip_filter=lambda h: True):
-        s  = f"Network {self.name}:\n"
-        for host in self.hosts:
-            ip = self.host_ips[host] if ip_filter(host) else "HIDDEN"
-            s += f"- Host {host.name}, IP {ip}\n"
-        return s.rstrip()
-
-    def interact(self, *, uid=PRIVILEGED_UID):
-        hostname = input("Which host would you like to interact with? ")
-        try:
-            host = next(h for h in self.hosts if h.name == hostname)
-            uid = PRIVILEGED_UID if input("Launch root shell (y/N)? ").lower() == "y" else UNPRIVILEGED_UID
-            host.interact(uid=uid)
-        except StopIteration:
-            print("No such host!")
-
-    def print_adj_list(self):
-         for src_host, dst_hosts in self.host_edges.items():
-             for dst_host in dst_hosts:
-                 print(f"{src_host.name} {self.host_ips[src_host]} <-> {self.host_ips[dst_host]} {dst_host.name}")
-         super().run()
-
-    def _random_ip(self):
-        selected_ip = random.randint(0, len(self._available_ips))
-        self._available_ips.remove(selected_ip)
-        return selected_ip
-
-    def dhcp(self, host, randomize=False):
-        if randomize:
-            assert self._next_ip == 1
-            self.host_ips[host] = f"10.0.0.{self._random_ip()}"
-            return self.host_ips[host]
+        if ip is not None:
+            existing_host_with_ip = next((host for host, host_ip in self.host_ips.items() if host_ip == ip), None)
+            if existing_host_with_ip is not None:
+                raise RuntimeError("Host `{host}` requested IP address `{ip}` already in use by `{existing_host_with_ip}`")
+            self.host_ips[host] = ip
         else:
-            if host not in self.host_ips:
-                assert self._next_ip < 255
-                self.host_ips[host] = f"10.0.0.{self._next_ip}"
-                self._next_ip += 1
-            return self.host_ips[host]
+            try:
+                ip = next(ip for ip in self.subnet_ip_range if ip not in self.host_ips.values())
+            except StopIteration:
+                raise RuntimeError("No more IP addresses available")
+            self.host_ips[host] = ip
 
-    def connect(self, host1, host2, randomize=False):
-        self.dhcp(host1, randomize=False)
-        self.dhcp(host2, randomize=False)
+        return self.host_ips[host]
+
+    def connect(self, host1, host2):
+        self.assign_ip_address(host1)
+        self.assign_ip_address(host2)
         self.host_edges.setdefault(host1, set()).add(host2)
         self.host_edges.setdefault(host2, set()).add(host1)
         return self
@@ -97,7 +83,7 @@ class Network(Host):
             ip_run(f"link set veth{host.id}-child netns {host.pid}")
             # TODO: host `ip_run` before chroot
             host.exec(lambda: (ip_run(f"link set veth{host.id}-child name eth0"),
-                               ip_run(f"addr add {host_ip}/24 dev eth0"),
+                               ip_run(f"addr add {host_ip}/{self.subnet_mask} dev eth0"),
                                ip_run("link set eth0 up")))
 
     def start(self):
@@ -110,6 +96,30 @@ class Network(Host):
         network_ready_event.set()
 
     @property
+    def subnet_mask(self):
+        return int(self.subnet.split("/")[1])
+
+    @property
+    def subnet_ip_range(self):
+        for ip in self.subnet_int_ip_range:
+            yield self.int_to_ip(ip)
+
+    @property
+    def subnet_int_ip_range(self):
+        base_ip, mask = self.subnet.split("/")
+        base_ip = self.ip_to_int(base_ip)
+        mask = int(mask)
+        return range(base_ip, base_ip + (1 << (32 - mask)))
+
+    @staticmethod
+    def ip_to_int(ip):
+        return sum(int(octet) << (8 * i) for i, octet in enumerate(reversed(ip.split("."))))
+
+    @staticmethod
+    def int_to_ip(ip):
+        return f"{ip >> 24 & 0xFF}.{ip >> 16 & 0xFF}.{ip >> 8 & 0xFF}.{ip & 0xFF}"
+
+    @property
     def hosts(self):
         return self.host_ips.keys()
 
@@ -119,26 +129,3 @@ class Network(Host):
             **{user_id: user_id for host in self.hosts for user_id in host.uid_map.values()},
             PRIVILEGED_UID: PRIVILEGED_UID,
         }
-
-    def generate_linear_network(self, host_list, start, end, min_len=4, max_len=8):
-        prev_host = start
-
-        length = random.randint(min_len, max_len)
-        for _ in range(length):
-            selected_host = host_list[random.randint(0, len(host_list))].copy()
-            self.connect(prev_host, selected_host, randomize=True)
-            prev_host = selected_host
-        self.connect(prev_host, end)
-
-    def generate_random_network(self, host_list, size, start, end, min_depth=4):
-        assert size > min_depth
-
-        depth = random.randint(min_depth, size)
-        self.generate_linear_network(host_list, start, end, min_len=depth, max_len=depth)
-
-        rand_node_cnt = size - depth
-
-        for _ in range(rand_node_cnt):
-            selected_src = list(self.host_edges.keys())[random.randint(0, len(self.host_edges))]
-            selected_dest = host_list[random.randint(0, len(host_list))].copy()
-            self.connect(selected_src, selected_dest, randomize=True)
