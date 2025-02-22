@@ -90,7 +90,8 @@ class Network(Host):
         super().start()
         network_ready_event = multiprocessing.Event()
         ip_run("link add name bridge0 type bridge")
-        self.setup_iptables()
+        # TODO: default should (and is not) to restrict any traffic, that behavior should be opt-in
+        # self.setup_iptables()
         self.setup_hosts(ready_event=network_ready_event)
         ip_run("link set bridge0 up")
         network_ready_event.set()
