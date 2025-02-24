@@ -193,12 +193,13 @@ class Host:
             kwargs.setdefault("capture_output", True)
         return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait)
 
-    def interactive(self, *, environ=None):
+    def interactive(self, *, preexec_fn=None, environ=None):
+        preexec_fn = preexec_fn if preexec_fn is not None else lambda: None
         environ = environ if environ is not None else os.environ
         shell = environ.get("SHELL", "/bin/sh")
         login_shell = "-" + shell.split("/")[-1]
         cwd = os.getcwd()
-        pid = self.exec(lambda: (os.chdir(cwd), os.execve(shell, [login_shell], environ)), wait=False)
+        pid = self.exec(lambda: (os.chdir(cwd), preexec_fn(), os.execve(shell, [login_shell], environ)), wait=False)
         os.waitid(os.P_PID, pid, os.WEXITED)
 
     @property
