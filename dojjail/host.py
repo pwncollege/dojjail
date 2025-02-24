@@ -1,11 +1,11 @@
-import multiprocessing
-import subprocess
 import logging
-import weakref
-import socket
-import signal
-import time
+import multiprocessing
 import os
+import signal
+import socket
+import subprocess
+import time
+import weakref
 
 from .ns import NS, new_ns, set_ns
 from .net import ip_run
@@ -25,8 +25,6 @@ host_pids = [ multiprocessing.Value("i", 0) for _ in range(MAX_HOSTS)]
 host_target_pids = [ multiprocessing.Value("i", 0) for _ in range(MAX_HOSTS)]
 
 class DelayedKeyboardInterrupt:
-    #pylint:disable=attribute-defined-outside-init
-
     def __enter__(self):
         self.signal_received = False
         self.old_handler = signal.signal(signal.SIGINT, self.handler)
@@ -43,7 +41,6 @@ class DelayedKeyboardInterrupt:
 class Host:
     _next_id = 0
 
-    #pylint:disable=redefined-outer-name
     def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, persist=False):
         if name is None:
             name = f"Host-{Host._next_id}"
@@ -63,7 +60,7 @@ class Host:
         if not self.persist:
             self._finalizer = weakref.finalize(self, self.kill)
 
-    def run(self, *, ready_event=None): #pylint:disable=inconsistent-return-statements
+    def run(self, *, ready_event=None):
         if self.pid:
             return self
 
@@ -79,7 +76,7 @@ class Host:
         if ready_event:
             ready_event.wait()
         self.seccomp()
-        result = self.entrypoint() #pylint:disable=assignment-from-none,assignment-from-no-return
+        result = self.entrypoint()
         self._child_pipe.send(result)
         os._exit(0)
 
@@ -150,7 +147,7 @@ class Host:
         if self.seccomp_block is not None:
             seccomp_block(self.seccomp_block)
 
-    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True): #pylint:disable=inconsistent-return-statements
+    def exec(self, fn, *, uid=PRIVILEGED_UID, wait=True):
         parent_pipe, child_pipe = multiprocessing.Pipe()
         pid = os.fork()
         if pid:
@@ -166,7 +163,7 @@ class Host:
         self.seccomp()
         try:
             result = fn()
-        except Exception as e: #pylint:disable=broad-exception-caught
+        except Exception as e:
             import traceback
             traceback.print_exc()
             result = e
@@ -180,10 +177,15 @@ class Host:
             kwargs.setdefault("stderr", 2)
         else:
             kwargs.setdefault("capture_output", True)
-        return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait) #pylint:disable=subprocess-run-check
+        return self.exec((lambda: subprocess.run(cmd, shell=True, **kwargs)), uid=uid, wait=wait)
 
-    def interact(self, **kwargs):
-        self.exec_shell("/bin/env -i /bin/bash -i", attach=True, **kwargs)
+    def interactive(self, *, environ=None):
+        environ = environ if environ is not None else os.environ
+        shell = environ.get("SHELL", "/bin/sh")
+        login_shell = "-" + shell.split("/")[-1]
+        cwd = os.getcwd()
+        pid = self.exec(lambda: (os.chdir(cwd), os.execve(shell, [login_shell], environ)), wait=False)
+        os.waitid(os.P_PID, pid, os.WEXITED)
 
     @property
     def pid(self):
