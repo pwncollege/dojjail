@@ -99,8 +99,6 @@ def limit_capabilities(capabilities):
 
     for cap in range(cap_last_cap):
         if effective & (1 << cap):
-            print(f"Raising capability {CAP(1 << cap).name}")
             assert libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, cap, 0, 0) == 0
         else:
-            print(f"Lowering capability {CAP(1 << cap).name}")
             assert libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_LOWER, cap, 0, 0) == 0
