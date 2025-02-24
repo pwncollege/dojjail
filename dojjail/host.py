@@ -41,7 +41,16 @@ class DelayedKeyboardInterrupt:
 class Host:
     _next_id = 0
 
-    def __init__(self, name=None, *, ns_flags=NS.ALL, seccomp_allow=None, seccomp_block=None, persist=False):
+    def __init__(self,
+                 name=None,
+                 *,
+                 ns_flags=NS.ALL,
+                 seccomp_allow=None,
+                 seccomp_block=None,
+                 persist=False,
+                 privileged_uid=None,
+                 unprivileged_uid=None):
+
         if name is None:
             name = f"Host-{Host._next_id}"
 
@@ -54,6 +63,11 @@ class Host:
 
         self.id = Host._next_id
         Host._next_id += 1
+
+        privileged_uid = privileged_uid if privileged_uid is not None else HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH + 0
+        unprivileged_uid = unprivileged_uid if unprivileged_uid is not None else HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH + 1
+        self._uid_map = {k: v for k, v in {PRIVILEGED_UID: privileged_uid, UNPRIVILEGED_UID: unprivileged_uid}.items() if v is not False}
+
         self._parent_pipe, self._child_pipe = multiprocessing.Pipe()
 
         self.persist = persist
@@ -193,7 +207,4 @@ class Host:
 
     @property
     def uid_map(self):
-        return {
-            PRIVILEGED_UID: (HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH) + 0,
-            UNPRIVILEGED_UID: (HOST_UID_MAP_BASE + self.id * HOST_UID_MAP_LENGTH) + 1,
-        }
+        return self._uid_map
