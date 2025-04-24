@@ -1,8 +1,9 @@
 import ctypes
 import enum
+import os
 
 
-libc = ctypes.CDLL("libc.so.6")
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
 
 class CAP(enum.IntFlag):
@@ -45,12 +46,31 @@ class CAP(enum.IntFlag):
     BLOCK_SUSPEND    = 1 << 36
     AUDIT_READ	     = 1 << 37
 
+class SECBIT(enum.IntFlag):
+    NOROOT                      = 1 << 0
+    NOROOT_LOCKED               = 1 << 1
+    NO_SETUID_FIXUP             = 1 << 2
+    NO_SETUID_FIXUP_LOCKED      = 1 << 3
+    KEEP_CAPS                   = 1 << 4
+    KEEP_CAPS_LOCKED            = 1 << 5
+    NO_CAP_AMBIENT_RAISE        = 1 << 6
+    NO_CAP_AMBIENT_RAISE_LOCKED = 1 << 7
+
+def get_securebits():
+    PR_GET_SECUREBITS = 27
+    securebits = libc.prctl(PR_GET_SECUREBITS)
+    if securebits == -1:
+        errno = ctypes.get_errno()
+        raise OSError(errno, f"Failed to get securebits: {os.strerror(errno)}")
+    return SECBIT(securebits)
+
+def set_securebits(securebits):
+    PR_SET_SECUREBITS = 28
+    if libc.prctl(PR_SET_SECUREBITS, securebits) != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, f"Failed to set securebits: {os.strerror(errno)}")
 
 def limit_capabilities(capabilities):
-    PR_GET_SECUREBITS           = 27
-    PR_SET_SECUREBITS           = 28
-    SECBIT_NOROOT               = 1 << 1
-    SECBIT_NOROOT_LOCKED        = 1 << 2
     PR_CAPBSET_DROP             = 24
     PR_CAP_AMBIENT              = 47
     PR_CAP_AMBIENT_RAISE        = 2
@@ -71,11 +91,14 @@ def limit_capabilities(capabilities):
             ("inheritable", ctypes.c_uint32),
         ]
 
-    secure_bits = libc.prctl(PR_GET_SECUREBITS)
-    assert secure_bits != -1
-
-    secure_bits |= SECBIT_NOROOT|SECBIT_NOROOT_LOCKED
-    assert libc.prctl(PR_SET_SECUREBITS, secure_bits) == 0
+    securebits = get_securebits() & ~SECBIT.KEEP_CAPS | (
+        SECBIT.KEEP_CAPS_LOCKED |
+        SECBIT.NO_SETUID_FIXUP |
+        SECBIT.NO_SETUID_FIXUP_LOCKED |
+        SECBIT.NOROOT |
+        SECBIT.NOROOT_LOCKED
+    )
+    set_securebits(securebits)
 
     header = __user_cap_header_struct(version=_LINUX_CAPABILITY_VERSION_3, pid=0)
     payload = (__user_cap_data_struct * _LINUX_CAPABILITY_U32S_3)()
@@ -91,7 +114,7 @@ def limit_capabilities(capabilities):
     effective = (payload[1].effective << 32) | payload[0].effective
     cap_last_cap = int(open("/proc/sys/kernel/cap_last_cap").read())
 
-    for cap in range(cap_last_cap):
+    for cap in range(cap_last_cap + 1):
         if not effective & (1 << cap):
             assert libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) == 0
 
