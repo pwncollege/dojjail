@@ -99,7 +99,7 @@ class Host:
             socket.sethostname(self.name)
         if self.ns_flags & NS.PID:
             pid = fork_clean(parent_death_signal=None if self.persist else 9)
-            host_target_pids[self.id] = pid
+            host_target_pids[self.id].value = pid
             if pid:
                 with DelayedKeyboardInterrupt():
                     os.waitid(os.P_PID, pid, os.WEXITED)
@@ -140,13 +140,20 @@ class Host:
         return result
 
     def kill(self, *, signal=signal.SIGTERM):
-        try:
-            # This SIGTERM goes to the "waiting python process"
-            os.kill(self.pid, signal)
-            # Target being executed in namespaces does not exit gracefully /w SIGTERM
-            os.kill(host_target_pids[self.id].value, 9)
-        except ProcessLookupError:
-            pass
+        # This SIGTERM goes to the "waiting python process".
+        if self.pid > 0:
+            try:
+                os.kill(self.pid, signal)
+            except ProcessLookupError:
+                pass
+
+        # Only kill the target PID when we actually created one.
+        target_pid = host_target_pids[self.id].value
+        if self.ns_flags & NS.PID and target_pid > 0:
+            try:
+                os.kill(target_pid, 9)
+            except ProcessLookupError:
+                pass
 
     def enter(self, *, uid=PRIVILEGED_UID):
         assert self.pid
