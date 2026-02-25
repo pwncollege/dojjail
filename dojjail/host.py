@@ -141,7 +141,7 @@ class Host:
 
     def kill(self, *, signal=signal.SIGTERM):
         # This SIGTERM goes to the "waiting python process".
-        if self.pid > 1:
+        if self.pid > 0:
             try:
                 os.kill(self.pid, signal)
             except ProcessLookupError:
@@ -149,7 +149,7 @@ class Host:
 
         # Only kill the target PID when we actually created one.
         target_pid = host_target_pids[self.id].value
-        if self.ns_flags & NS.PID and target_pid > 1:
+        if self.ns_flags & NS.PID and target_pid > 0:
             try:
                 os.kill(target_pid, 9)
             except ProcessLookupError:
